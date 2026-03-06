@@ -34,6 +34,7 @@ It can also add audit columns:
 ```text
 .
 ├── app.py
+├── backups/
 ├── examples/
 │   └── companies.csv
 ├── src/company_gtm_enricher/
@@ -113,6 +114,22 @@ Useful flags:
 - `--batch-size` to choose how many unique companies go into each request
 - `--no-audit-columns` to keep the output narrower
 
+## Runtime Behavior
+
+- The app processes unique company names in batches and reuses results for duplicates in the same upload.
+- `Pause` holds the run state in memory and resumes between batches.
+- `Stop` ends the run and writes a backup CSV if any rows were already processed.
+- The original uploaded file is never modified in place.
+- A completed run exposes the final `Download enriched CSV` action in the UI.
+- Interim backup files are written under `backups/` and can be downloaded from the run-status section.
+
+## Interim Backups
+
+- The worker writes an interim backup CSV every `10` minutes during an active run.
+- If the run is stopped or fails after partial progress, it flushes one more backup immediately.
+- Unprocessed rows in a backup are marked with `Enrichment Status = pending`.
+- Backup files are local-only and ignored by git.
+
 ## Input Requirements
 
 - CSV format only
@@ -138,6 +155,12 @@ Useful flags:
 - Duplicate company names in the same upload are cached during a run to avoid duplicate lookups.
 - Pause or stop actions take effect between request batches, so a large batch may need to finish before the UI reflects the action.
 - Interim backups are written to `backups/` every 10 minutes and again on stop/failure when partial progress exists.
+
+## Current Limits
+
+- The current UI keeps active run state in memory while the app process is alive.
+- If the Streamlit process is restarted before the next backup flush, the most recent in-memory progress can still be lost.
+- Backup cadence is time-based, not row-count-based.
 
 ## Tests
 
