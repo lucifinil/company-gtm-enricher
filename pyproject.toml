@@ -19,6 +19,9 @@ dependencies = [
   "streamlit>=1.44.0",
 ]
 
+[project.scripts]
+company-gtm-enricher = "company_gtm_enricher.cli:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3.5",
@@ -27,3 +30,6 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

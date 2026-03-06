@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, Optional
+
+from company_gtm_enricher.models import CompanyEnrichment
+
+
+SYSTEM_PROMPT = """
+You enrich company records with public go-to-market research.
+
+Return exactly one JSON object with these keys:
+- hq_city
+- hq_state
+- country
+- approximate_annual_revenue
+- current_total_funding
+- confidence
+- source_urls
+- notes
+
+Rules:
+- Use public web information and prefer official company pages, regulatory filings, Crunchbase, LinkedIn, or reputable business databases.
+- If a value cannot be found confidently, use "Unknown".
+- approximate_annual_revenue must stay approximate, for example "$50M-$100M" or "Unknown".
+- current_total_funding must be the best current total funding estimate, for example "$290M" or "Public company".
+- source_urls must be an array of up to 5 URLs.
+- confidence must be one of: high, medium, low.
+- notes must be one short sentence with any material caveat.
+- Return JSON only. Do not wrap it in markdown.
+""".strip()
+
+
+class OpenAIEnrichmentProvider:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        timeout_seconds: float,
+    ) -> None:
+        if not api_key:
+            raise ValueError(
+                "OPENAI_API_KEY is not set. Add it to your environment or switch the app to the mock provider."
+            )
+
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover - depends on local env
+            raise ValueError(
+                "The `openai` package is not installed. Run `pip install -e .[dev]` first."
+            ) from exc
+
+        self._client = OpenAI(api_key=api_key, timeout=timeout_seconds)
+        self._model = model
+
+    def enrich_company(self, company_name: str) -> CompanyEnrichment:
+        response = self._client.chat.completions.create(
+            model=self._model,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        "Research the following company and return the requested JSON fields.\n"
+                        f"Company name: {company_name}"
+                    ),
+                },
+            ],
+        )
+        raw_content = _message_content_to_text(response.choices[0].message.content)
+        payload = _parse_json_object(raw_content)
+        return CompanyEnrichment(
+            company_name=company_name,
+            hq_city=_string_value(payload, "hq_city"),
+            hq_state=_string_value(payload, "hq_state"),
+            country=_string_value(payload, "country"),
+            approximate_annual_revenue=_string_value(payload, "approximate_annual_revenue"),
+            current_total_funding=_string_value(payload, "current_total_funding"),
+            confidence=_confidence_value(payload.get("confidence")),
+            source_urls=_source_urls(payload.get("source_urls")),
+            notes=_string_value(payload, "notes"),
+        )
+
+
+def _parse_json_object(raw_content: str) -> Dict[str, Any]:
+    try:
+        return json.loads(raw_content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Model response was not valid JSON: {raw_content}") from exc
+
+
+def _message_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content or "{}"
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text_parts.append(str(item.get("text", "")))
+        return "".join(text_parts) or "{}"
+    return "{}"
+
+
+def _string_value(payload: Dict[str, Any], key: str) -> str:
+    value = payload.get(key, "Unknown")
+    if value is None:
+        return "Unknown"
+    return str(value).strip() or "Unknown"
+
+
+def _confidence_value(value: Optional[Any]) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"high", "medium", "low"}:
+        return normalized
+    return "low"
+
+
+def _source_urls(value: Optional[Any]) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()][:5]
+    if value is None:
+        return []
+    text = str(value).strip()
+    return [text] if text else []
