@@ -1,23 +1,13 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from company_gtm_enricher.models import CompanyEnrichment
 
 
-SYSTEM_PROMPT = """
+COMMON_RULES = """
 You enrich company records with public go-to-market research.
-
-Return exactly one JSON object with these keys:
-- hq_city
-- hq_state
-- country
-- approximate_annual_revenue
-- current_total_funding
-- confidence
-- source_urls
-- notes
 
 Rules:
 - Use public web information and prefer official company pages, regulatory filings, Crunchbase, LinkedIn, or reputable business databases.
@@ -29,6 +19,23 @@ Rules:
 - notes must be one short sentence with any material caveat.
 - Return JSON only. Do not wrap it in markdown.
 """.strip()
+
+SINGLE_SYSTEM_PROMPT = (
+    COMMON_RULES
+    + "\n\nReturn exactly one JSON object with these keys:\n"
+    + "- hq_city\n- hq_state\n- country\n- approximate_annual_revenue\n"
+    + "- current_total_funding\n- confidence\n- source_urls\n- notes"
+)
+
+BATCH_SYSTEM_PROMPT = (
+    COMMON_RULES
+    + "\n\nReturn exactly one JSON object with this shape:\n"
+    + '{\n  "companies": [\n    {\n      "company_name": "...",\n      "hq_city": "...",\n'
+    + '      "hq_state": "...",\n      "country": "...",\n'
+    + '      "approximate_annual_revenue": "...",\n      "current_total_funding": "...",\n'
+    + '      "confidence": "...",\n      "source_urls": ["..."],\n      "notes": "..."\n    }\n  ]\n}\n'
+    + "Return one object for every input company. `company_name` must exactly match the input string."
+)
 
 
 class OpenAIEnrichmentProvider:
@@ -58,7 +65,7 @@ class OpenAIEnrichmentProvider:
             model=self._model,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": SINGLE_SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": (
@@ -70,17 +77,45 @@ class OpenAIEnrichmentProvider:
         )
         raw_content = _message_content_to_text(response.choices[0].message.content)
         payload = _parse_json_object(raw_content)
-        return CompanyEnrichment(
-            company_name=company_name,
-            hq_city=_string_value(payload, "hq_city"),
-            hq_state=_string_value(payload, "hq_state"),
-            country=_string_value(payload, "country"),
-            approximate_annual_revenue=_string_value(payload, "approximate_annual_revenue"),
-            current_total_funding=_string_value(payload, "current_total_funding"),
-            confidence=_confidence_value(payload.get("confidence")),
-            source_urls=_source_urls(payload.get("source_urls")),
-            notes=_string_value(payload, "notes"),
+        return _company_enrichment_from_payload(company_name, payload)
+
+    def enrich_companies(self, company_names: Sequence[str]) -> Dict[str, CompanyEnrichment]:
+        if not company_names:
+            return {}
+
+        response = self._client.chat.completions.create(
+            model=self._model,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": BATCH_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": "Research the following companies and return one entry for each.\n"
+                    + "\n".join(
+                        f"{index}. {company_name}"
+                        for index, company_name in enumerate(company_names, start=1)
+                    ),
+                },
+            ],
         )
+        raw_content = _message_content_to_text(response.choices[0].message.content)
+        payload = _parse_json_object(raw_content)
+        company_payloads = payload.get("companies")
+        if not isinstance(company_payloads, list):
+            raise ValueError(f"Model response did not contain a `companies` list: {raw_content}")
+
+        original_names = {company_name.casefold(): company_name for company_name in company_names}
+        results: Dict[str, CompanyEnrichment] = {}
+        for company_payload in company_payloads:
+            if not isinstance(company_payload, dict):
+                continue
+            payload_name = str(company_payload.get("company_name", "")).strip()
+            original_name = original_names.get(payload_name.casefold())
+            if not original_name:
+                continue
+            results[original_name] = _company_enrichment_from_payload(original_name, company_payload)
+
+        return results
 
 
 def _parse_json_object(raw_content: str) -> Dict[str, Any]:
@@ -100,6 +135,23 @@ def _message_content_to_text(content: Any) -> str:
                 text_parts.append(str(item.get("text", "")))
         return "".join(text_parts) or "{}"
     return "{}"
+
+
+def _company_enrichment_from_payload(
+    company_name: str,
+    payload: Dict[str, Any],
+) -> CompanyEnrichment:
+    return CompanyEnrichment(
+        company_name=company_name,
+        hq_city=_string_value(payload, "hq_city"),
+        hq_state=_string_value(payload, "hq_state"),
+        country=_string_value(payload, "country"),
+        approximate_annual_revenue=_string_value(payload, "approximate_annual_revenue"),
+        current_total_funding=_string_value(payload, "current_total_funding"),
+        confidence=_confidence_value(payload.get("confidence")),
+        source_urls=_source_urls(payload.get("source_urls")),
+        notes=_string_value(payload, "notes"),
+    )
 
 
 def _string_value(payload: Dict[str, Any], key: str) -> str:

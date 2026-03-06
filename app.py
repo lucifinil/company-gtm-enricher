@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import time
+from typing import Optional
 
 import streamlit as st
 
@@ -11,12 +13,16 @@ from company_gtm_enricher.csv_tools import (
     detect_company_column,
     load_dataframe_from_csv_bytes,
 )
-from company_gtm_enricher.enrichment_service import CompanyEnrichmentService
+from company_gtm_enricher.job_runner import EnrichmentJob, start_enrichment_job
 from company_gtm_enricher.providers.factory import create_provider
+
+
+ACTIVE_JOB_STATUSES = {"running", "paused", "stopping"}
 
 
 def main() -> None:
     config = AppConfig.from_env()
+    job = st.session_state.get("enrichment_job")
 
     st.set_page_config(page_title="Company GTM Enricher", page_icon=":bar_chart:")
     st.title("Company GTM Enricher")
@@ -32,6 +38,13 @@ def main() -> None:
             help="Use mock to test the workflow without live API calls.",
         )
         model_name = st.text_input("OpenAI model", value=config.openai_model)
+        batch_size = st.number_input(
+            "Batch size",
+            min_value=1,
+            value=config.openai_batch_size,
+            step=1,
+            help="Unique companies are grouped into batches of this size before sending requests.",
+        )
         include_audit_columns = st.checkbox(
             "Include audit columns",
             value=True,
@@ -39,15 +52,21 @@ def main() -> None:
         )
 
         st.markdown("**Environment**")
-        st.write(f"Max companies per run: `{config.max_companies_per_run}`")
+        st.write(
+            "Max companies per run: "
+            + (f"`{config.max_companies_per_run}`" if config.max_companies_per_run else "`unlimited`")
+        )
         st.write(
             "OpenAI API key loaded: "
             + ("`yes`" if bool(config.openai_api_key) else "`no`")
         )
 
+    _render_job_controls(job)
+
     uploaded_file = st.file_uploader("Upload a CSV", type=["csv"])
     if uploaded_file is None:
         st.info("Upload a CSV file to begin.")
+        _schedule_refresh(job)
         return
 
     try:
@@ -60,7 +79,7 @@ def main() -> None:
         st.error("The CSV file is empty.")
         return
 
-    if len(dataframe.index) > config.max_companies_per_run:
+    if config.max_companies_per_run and len(dataframe.index) > config.max_companies_per_run:
         st.error(
             "This file has "
             f"{len(dataframe.index)} rows, which exceeds the configured limit of "
@@ -79,53 +98,127 @@ def main() -> None:
     )
 
     st.subheader("Preview")
-    st.dataframe(dataframe.head(10), use_container_width=True)
+    st.dataframe(dataframe.head(10), width="stretch")
 
-    if not st.button("Enrich CSV", type="primary"):
-        return
+    if not _is_job_active(job):
+        if not st.button("Enrich CSV", type="primary"):
+            _render_job_result(job)
+            return
 
-    try:
-        provider = create_provider(
-            provider_name=provider_name,
-            config=config,
-            model_override=model_name.strip() or None,
-        )
-    except ValueError as exc:
-        st.error(str(exc))
-        return
+        try:
+            provider = create_provider(
+                provider_name=provider_name,
+                config=config,
+                model_override=model_name.strip() or None,
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+            return
 
-    service = CompanyEnrichmentService(provider=provider)
-    progress_bar = st.progress(0.0, text="Starting enrichment...")
-    status_placeholder = st.empty()
-
-    def on_progress(current: int, total: int, company_name: str) -> None:
-        progress_bar.progress(
-            current / total,
-            text=f"Processing {current}/{total}: {company_name or 'blank row'}",
-        )
-        status_placeholder.caption(f"Current company: `{company_name or 'blank row'}`")
-
-    with st.spinner("Researching companies..."):
-        enriched_dataframe = service.enrich_dataframe(
+        st.session_state["enrichment_job"] = start_enrichment_job(
             dataframe=dataframe,
             company_column=company_column,
+            provider=provider,
             include_audit_columns=include_audit_columns,
-            progress_callback=on_progress,
+            batch_size=int(batch_size),
+            input_filename=uploaded_file.name,
+            output_filename=uploaded_file.name.rsplit(".", 1)[0] + "_enriched.csv",
         )
+        st.rerun()
 
-    progress_bar.progress(1.0, text="Enrichment complete.")
+    _render_job_result(st.session_state.get("enrichment_job"))
+    _schedule_refresh(st.session_state.get("enrichment_job"))
+
+
+def _render_job_controls(job: Optional[EnrichmentJob]) -> None:
+    if job is None:
+        return
+
+    with job.lock:
+        status = job.status
+        total_companies = job.total_companies
+        processed_companies = job.processed_companies
+        current_company = job.current_company
+        error_message = job.error_message
+
+    st.subheader("Run Status")
+    st.write(f"Status: `{status}`")
+    st.write(f"Processed companies: `{processed_companies}` / `{total_companies}`")
+    st.write(f"Current company: `{current_company or 'waiting'}`")
+
+    progress_total = total_companies or 1
+    progress_value = min(processed_companies / progress_total, 1.0)
+    progress_label = (
+        f"Processing {processed_companies}/{total_companies}: {current_company or 'waiting'}"
+        if status in ACTIVE_JOB_STATUSES
+        else f"{status.capitalize()} {processed_companies}/{total_companies}"
+    )
+    st.progress(progress_value, text=progress_label)
+
+    controls = st.columns(3)
+    if status == "running" and controls[0].button("Pause"):
+        job.pause_event.set()
+        with job.lock:
+            job.status = "paused"
+        st.rerun()
+    if status == "paused" and controls[0].button("Resume"):
+        job.pause_event.clear()
+        with job.lock:
+            job.status = "running"
+        st.rerun()
+    if status in {"running", "paused"} and controls[1].button("Stop"):
+        job.stop_event.set()
+        job.pause_event.clear()
+        with job.lock:
+            job.status = "stopping"
+        st.rerun()
+    if status in {"completed", "failed", "stopped"} and controls[2].button("Clear run state"):
+        st.session_state.pop("enrichment_job", None)
+        st.rerun()
+
+    if status == "failed" and error_message:
+        st.error(error_message)
+    if status == "stopped":
+        st.warning("The enrichment run was stopped before completion.")
+
+
+def _render_job_result(job: Optional[EnrichmentJob]) -> None:
+    if job is None:
+        return
+
+    with job.lock:
+        status = job.status
+        result_dataframe = job.result_dataframe
+        output_filename = job.output_filename
+
+    if status != "completed" or result_dataframe is None:
+        return
+
     st.success("Enrichment complete.")
     st.subheader("Enriched Preview")
-    st.dataframe(enriched_dataframe.head(25), use_container_width=True)
+    st.dataframe(result_dataframe.head(25), width="stretch")
 
-    csv_bytes = dataframe_to_csv_bytes(enriched_dataframe)
-    output_name = uploaded_file.name.rsplit(".", 1)[0] + "_enriched.csv"
+    csv_bytes = dataframe_to_csv_bytes(result_dataframe)
     st.download_button(
         label="Download enriched CSV",
         data=io.BytesIO(csv_bytes),
-        file_name=output_name,
+        file_name=output_filename,
         mime="text/csv",
     )
+
+
+def _is_job_active(job: Optional[EnrichmentJob]) -> bool:
+    if job is None:
+        return False
+    with job.lock:
+        return job.status in ACTIVE_JOB_STATUSES
+
+
+def _schedule_refresh(job: Optional[EnrichmentJob]) -> None:
+    if not _is_job_active(job):
+        return
+    time.sleep(1)
+    st.rerun()
 
 
 if __name__ == "__main__":

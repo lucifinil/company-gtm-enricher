@@ -25,6 +25,7 @@ It can also add audit columns:
 - Pandas handles CSV parsing and output generation.
 - A provider layer keeps enrichment logic separate from the UI.
 - The default live provider uses the OpenAI API to do public-web research and return a structured JSON payload.
+- OpenAI requests are batched by unique company names to reduce request count.
 - A mock provider is included for dry runs and UI testing without an API key.
 
 ## Project Structure
@@ -83,7 +84,9 @@ The app will open locally and let you:
 - upload a CSV
 - select the company-name column
 - choose the provider
+- tune the request batch size
 - run enrichment
+- pause, resume, or stop an in-flight run
 - download the enriched CSV
 
 ## CLI Usage
@@ -104,6 +107,7 @@ Useful flags:
 
 - `--company-column` to explicitly choose the company-name column
 - `--model` to override the OpenAI model
+- `--batch-size` to choose how many unique companies go into each request
 - `--no-audit-columns` to keep the output narrower
 
 ## Input Requirements
@@ -120,7 +124,8 @@ Useful flags:
 | `OPENAI_API_KEY` | empty | Required for live enrichment |
 | `OPENAI_MODEL` | `gpt-4o-mini-search-preview` | Search-capable model used by the OpenAI provider |
 | `OPENAI_TIMEOUT_SECONDS` | `45` | Request timeout for the OpenAI client |
-| `MAX_COMPANIES_PER_RUN` | `25` | Guardrail for batch size in the UI |
+| `OPENAI_BATCH_SIZE` | `10` | Default number of unique companies per OpenAI request |
+| `MAX_COMPANIES_PER_RUN` | empty | Optional cap for UI batch size. Empty or `0` means unlimited |
 
 ## Notes on Data Quality
 
@@ -128,6 +133,7 @@ Useful flags:
 - Public company data is often easier to verify than private-company data.
 - The audit columns are useful when you need to review low-confidence rows manually.
 - Duplicate company names in the same upload are cached during a run to avoid duplicate lookups.
+- Pause or stop actions take effect between request batches, so a large batch may need to finish before the UI reflects the action.
 
 ## Tests
 

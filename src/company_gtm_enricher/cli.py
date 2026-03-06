@@ -35,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional OpenAI model override.",
     )
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="Companies to send in each request batch. Defaults to OPENAI_BATCH_SIZE.",
+    )
+    parser.add_argument(
         "--no-audit-columns",
         action="store_true",
         help="Exclude confidence, source URLs, status, and notes from the output.",
@@ -63,6 +69,7 @@ def main() -> int:
             dataframe=dataframe,
             company_column=company_column,
             include_audit_columns=not args.no_audit_columns,
+            batch_size=args.batch_size or config.openai_batch_size,
         )
     except (CSVValidationError, OSError, ValueError) as exc:
         parser.exit(status=1, message=f"Error: {exc}\n")

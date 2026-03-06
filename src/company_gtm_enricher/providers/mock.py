@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Dict, Sequence
+
 from company_gtm_enricher.models import CompanyEnrichment
 
 
@@ -57,3 +59,6 @@ class MockEnrichmentProvider:
             source_urls=[],
             notes="Mock provider does not have a curated entry for this company.",
         )
+
+    def enrich_companies(self, company_names: Sequence[str]) -> Dict[str, CompanyEnrichment]:
+        return {company_name: self.enrich_company(company_name) for company_name in company_names}
