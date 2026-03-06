@@ -5,9 +5,15 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 import streamlit as st
 
 from company_gtm_enricher.config import AppConfig
+from company_gtm_enricher.cost_estimator import (
+    DEFAULT_PRICING_MODELS,
+    CostEstimatorInputs,
+    estimate_costs,
+)
 from company_gtm_enricher.csv_tools import (
     CSVValidationError,
     dataframe_to_csv_bytes,
@@ -65,16 +71,32 @@ def main() -> None:
     _render_job_controls(job)
 
     uploaded_file = st.file_uploader("Upload a CSV", type=["csv"])
+    dataframe: Optional[pd.DataFrame] = None
+    estimator_company_count = 800
     if uploaded_file is None:
+        _render_cost_estimator(
+            default_company_count=estimator_company_count,
+            default_batch_size=int(batch_size),
+        )
         st.info("Upload a CSV file to begin.")
         _schedule_refresh(job)
         return
 
     try:
         dataframe = load_dataframe_from_csv_bytes(uploaded_file.getvalue())
+        estimator_company_count = len(dataframe.index) or estimator_company_count
     except CSVValidationError as exc:
+        _render_cost_estimator(
+            default_company_count=estimator_company_count,
+            default_batch_size=int(batch_size),
+        )
         st.error(str(exc))
         return
+
+    _render_cost_estimator(
+        default_company_count=estimator_company_count,
+        default_batch_size=int(batch_size),
+    )
 
     if len(dataframe.index) == 0:
         st.error("The CSV file is empty.")
@@ -203,6 +225,100 @@ def _render_job_controls(job: Optional[EnrichmentJob]) -> None:
         st.warning("The enrichment run was stopped before completion.")
 
 
+def _render_cost_estimator(default_company_count: int, default_batch_size: int) -> None:
+    with st.expander("Cost Estimator", expanded=False):
+        st.caption(
+            "Estimate total cost across curated OpenAI, Claude, and MiniMax models using your row count and token assumptions."
+        )
+        estimator_columns = st.columns(5)
+        company_count = estimator_columns[0].number_input(
+            "Companies",
+            min_value=1,
+            value=max(default_company_count, 1),
+            step=1,
+        )
+        batch_size = estimator_columns[1].number_input(
+            "Batch size",
+            min_value=1,
+            value=max(default_batch_size, 1),
+            step=1,
+        )
+        shared_input_tokens = estimator_columns[2].number_input(
+            "Shared input / request",
+            min_value=0,
+            value=900,
+            step=50,
+        )
+        input_tokens_per_company = estimator_columns[3].number_input(
+            "Input / company",
+            min_value=0,
+            value=90,
+            step=10,
+        )
+        output_tokens_per_company = estimator_columns[4].number_input(
+            "Output / company",
+            min_value=0,
+            value=180,
+            step=10,
+        )
+
+        inputs = CostEstimatorInputs(
+            company_count=int(company_count),
+            batch_size=int(batch_size),
+            shared_input_tokens_per_request=int(shared_input_tokens),
+            input_tokens_per_company=int(input_tokens_per_company),
+            output_tokens_per_company=int(output_tokens_per_company),
+        )
+        estimates = estimate_costs(inputs)
+
+        summary = st.columns(3)
+        summary[0].metric("Estimated requests", estimates[0].request_count)
+        summary[1].metric("Estimated input tokens", f"{estimates[0].total_input_tokens:,}")
+        summary[2].metric("Estimated output tokens", f"{estimates[0].total_output_tokens:,}")
+
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Provider": estimate.provider,
+                        "Model": estimate.model,
+                        "Currency": estimate.currency,
+                        "Input / 1M tokens": _format_money(
+                            estimate.currency,
+                            _find_rate(
+                                provider=estimate.provider,
+                                model=estimate.model,
+                                cost_type="input",
+                            ),
+                        ),
+                        "Output / 1M tokens": _format_money(
+                            estimate.currency,
+                            _find_rate(
+                                provider=estimate.provider,
+                                model=estimate.model,
+                                cost_type="output",
+                            ),
+                        ),
+                        "Estimated input cost": _format_money(
+                            estimate.currency, estimate.estimated_input_cost
+                        ),
+                        "Estimated output cost": _format_money(
+                            estimate.currency, estimate.estimated_output_cost
+                        ),
+                        "Estimated total cost": _format_money(
+                            estimate.currency, estimate.estimated_total_cost
+                        ),
+                    }
+                    for estimate in estimates
+                ]
+            ),
+            width="stretch",
+        )
+        st.caption(
+            "Estimator uses standard online pricing with provider-native currency. It does not model prompt caching, discounts, or exchange-rate conversion."
+        )
+
+
 def _render_job_result(job: Optional[EnrichmentJob]) -> None:
     if job is None:
         return
@@ -249,6 +365,22 @@ def _format_duration(duration_seconds: float) -> str:
     if hours:
         return f"{hours:d}:{minutes:02d}:{seconds:02d}"
     return f"{minutes:02d}:{seconds:02d}"
+
+
+def _format_money(currency: str, amount: float) -> str:
+    symbols = {"USD": "$", "CNY": "CNY "}
+    return f"{symbols.get(currency, currency + ' ')}{amount:,.4f}"
+
+
+def _find_rate(provider: str, model: str, cost_type: str) -> float:
+    for pricing_model in DEFAULT_PRICING_MODELS:
+        if pricing_model.provider == provider and pricing_model.model == model:
+            return (
+                pricing_model.input_price_per_million_tokens
+                if cost_type == "input"
+                else pricing_model.output_price_per_million_tokens
+            )
+    raise ValueError(f"Unknown pricing model: {provider} / {model}")
 
 
 if __name__ == "__main__":

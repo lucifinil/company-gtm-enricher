@@ -40,6 +40,7 @@ It can also add audit columns:
 ├── src/company_gtm_enricher/
 │   ├── cli.py
 │   ├── config.py
+│   ├── cost_estimator.py
 │   ├── csv_tools.py
 │   ├── enrichment_service.py
 │   ├── models.py
@@ -87,6 +88,7 @@ The app will open locally and let you:
 - select the company-name column
 - choose the provider
 - tune the request batch size
+- estimate cost across curated OpenAI, Claude, and MiniMax models before starting
 - run enrichment
 - pause, resume, or stop an in-flight run
 - see elapsed runtime while the job is active
@@ -122,6 +124,23 @@ Useful flags:
 - The original uploaded file is never modified in place.
 - A completed run exposes the final `Download enriched CSV` action in the UI.
 - Interim backup files are written under `backups/` and can be downloaded from the run-status section.
+
+## Cost Estimator
+
+- The UI includes a `Cost Estimator` section that compares 6 curated models.
+- Included providers: OpenAI, Anthropic, and MiniMax.
+- Included models:
+  - OpenAI: `GPT-5`, `GPT-5 mini`
+  - Anthropic: `Claude Sonnet 4.5`, `Claude Haiku 4.5`
+  - MiniMax: `MiniMax-M2.5`, `MiniMax-M2.5-highspeed`
+- The estimator uses:
+  - company count
+  - batch size
+  - shared prompt tokens per request
+  - estimated input tokens per company
+  - estimated output tokens per company
+- MiniMax pricing is shown in provider-native `CNY`; OpenAI and Anthropic are shown in `USD`.
+- The estimator is informational only and does not affect the actual enrichment run.
 
 ## Interim Backups
 
