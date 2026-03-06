@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "company-gtm-enricher"
+version = "0.1.0"
+description = "Upload a CSV of company names, enrich GTM fields, and download the results."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+  { name = "Fan Wang", email = "wangfansz@gmail.com" }
+]
+dependencies = [
+  "openai>=1.75.0",
+  "pandas>=2.2.3",
+  "python-dotenv>=1.0.1",
+  "streamlit>=1.44.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.5",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
