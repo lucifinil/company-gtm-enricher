@@ -11,6 +11,7 @@ from company_gtm_enricher.providers.base import EnrichmentProvider
 
 ProgressCallback = Callable[[int, int, str], None]
 StateCallback = Callable[[], bool]
+BatchCompleteCallback = Callable[[Dict[str, CompanyEnrichment]], None]
 
 
 class EnrichmentStopped(Exception):
@@ -28,6 +29,7 @@ class CompanyEnrichmentService:
         include_audit_columns: bool = True,
         batch_size: int = 1,
         progress_callback: Optional[ProgressCallback] = None,
+        batch_complete_callback: Optional[BatchCompleteCallback] = None,
         should_pause: Optional[StateCallback] = None,
         should_stop: Optional[StateCallback] = None,
     ) -> pd.DataFrame:
@@ -52,7 +54,28 @@ class CompanyEnrichmentService:
                 processed_companies += 1
                 if progress_callback is not None:
                     progress_callback(processed_companies, total_unique_companies, company_name)
+            if batch_complete_callback is not None:
+                batch_complete_callback(dict(cache))
 
+        return self.build_dataframe_from_cache(
+            dataframe=dataframe,
+            company_column=company_column,
+            cache=cache,
+            include_audit_columns=include_audit_columns,
+        )
+
+    def build_dataframe_from_cache(
+        self,
+        dataframe: pd.DataFrame,
+        company_column: str,
+        cache: Dict[str, CompanyEnrichment],
+        include_audit_columns: bool = True,
+        pending_status: str = "pending",
+        pending_notes: str = "This company has not been processed yet.",
+    ) -> pd.DataFrame:
+        normalized_company_names = [
+            normalize_company_name(raw_value) for raw_value in dataframe[company_column].tolist()
+        ]
         enrichment_rows = []
         for company_name in normalized_company_names:
             if not company_name:
@@ -65,8 +88,16 @@ class CompanyEnrichmentService:
                 )
                 continue
 
+            cached_enrichment = cache.get(company_name.casefold())
+            if cached_enrichment is None:
+                cached_enrichment = CompanyEnrichment.empty(
+                    company_name=company_name,
+                    status=pending_status,
+                    notes=pending_notes,
+                )
+
             enrichment_rows.append(
-                cache[company_name.casefold()].to_flat_dict(include_audit_columns=include_audit_columns)
+                cached_enrichment.to_flat_dict(include_audit_columns=include_audit_columns)
             )
 
         enrichment_frame = pd.DataFrame(enrichment_rows)
