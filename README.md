@@ -27,6 +27,7 @@ It can also add audit columns:
 - The default live provider uses the OpenAI API to do public-web research and return a structured JSON payload.
 - OpenAI requests are batched by unique company names to reduce request count.
 - A mock provider is included for dry runs and UI testing without an API key.
+- The UI shows elapsed runtime and writes an interim backup CSV every 10 minutes during long runs.
 
 ## Project Structure
 
@@ -87,6 +88,8 @@ The app will open locally and let you:
 - tune the request batch size
 - run enrichment
 - pause, resume, or stop an in-flight run
+- see elapsed runtime while the job is active
+- download the latest interim backup if a 10-minute flush has occurred
 - download the enriched CSV
 
 ## CLI Usage
@@ -134,6 +137,7 @@ Useful flags:
 - The audit columns are useful when you need to review low-confidence rows manually.
 - Duplicate company names in the same upload are cached during a run to avoid duplicate lookups.
 - Pause or stop actions take effect between request batches, so a large batch may need to finish before the UI reflects the action.
+- Interim backups are written to `backups/` every 10 minutes and again on stop/failure when partial progress exists.
 
 ## Tests
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import time
+from pathlib import Path
 from typing import Optional
 
 import streamlit as st
@@ -140,11 +141,31 @@ def _render_job_controls(job: Optional[EnrichmentJob]) -> None:
         processed_companies = job.processed_companies
         current_company = job.current_company
         error_message = job.error_message
+        started_at = job.started_at
+        finished_at = job.finished_at
+        backup_count = job.backup_count
+        last_backup_path = job.last_backup_path
+        last_backup_at = job.last_backup_at
 
     st.subheader("Run Status")
     st.write(f"Status: `{status}`")
     st.write(f"Processed companies: `{processed_companies}` / `{total_companies}`")
     st.write(f"Current company: `{current_company or 'waiting'}`")
+    st.write(f"Elapsed time: `{_format_duration((finished_at or time.time()) - started_at)}`")
+    st.write(f"Interim backups written: `{backup_count}`")
+    if last_backup_at is not None and last_backup_path:
+        st.write(
+            "Latest backup: "
+            + f"`{last_backup_path}` at `{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_backup_at))}`"
+        )
+        backup_file = Path(last_backup_path)
+        if backup_file.exists():
+            st.download_button(
+                label="Download latest backup CSV",
+                data=backup_file.read_bytes(),
+                file_name=backup_file.name,
+                mime="text/csv",
+            )
 
     progress_total = total_companies or 1
     progress_value = min(processed_companies / progress_total, 1.0)
@@ -219,6 +240,15 @@ def _schedule_refresh(job: Optional[EnrichmentJob]) -> None:
         return
     time.sleep(1)
     st.rerun()
+
+
+def _format_duration(duration_seconds: float) -> str:
+    total_seconds = max(int(duration_seconds), 0)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
 
 
 if __name__ == "__main__":

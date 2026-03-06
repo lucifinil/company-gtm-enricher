@@ -65,6 +65,27 @@ def test_enrich_dataframe_falls_back_to_single_calls_when_batch_fails() -> None:
     assert enriched.loc[0, "HQ City"] == "OpenAI Single City"
 
 
+def test_build_dataframe_from_cache_marks_unprocessed_rows_as_pending() -> None:
+    dataframe = pd.DataFrame({"company": ["OpenAI", "PingCAP", ""]})
+    service = CompanyEnrichmentService(provider=MockEnrichmentProvider())
+
+    partial = service.build_dataframe_from_cache(
+        dataframe=dataframe,
+        company_column="company",
+        cache={
+            "openai": CompanyEnrichment(
+                company_name="OpenAI",
+                hq_city="San Francisco",
+                status="ok",
+            )
+        },
+    )
+
+    assert partial.loc[0, "HQ City"] == "San Francisco"
+    assert partial.loc[1, "Enrichment Status"] == "pending"
+    assert partial.loc[2, "Enrichment Status"] == "skipped_empty"
+
+
 class RecordingBatchProvider:
     def __init__(self) -> None:
         self.batch_calls = []

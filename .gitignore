@@ -14,6 +14,7 @@ venv/
 
 # Streamlit
 .streamlit/
+backups/
 
 # OS / editor
 .DS_Store
